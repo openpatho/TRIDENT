@@ -7,6 +7,7 @@ StageName = Literal["segment", "patch", "extract", "all", "segment_patch"]
 
 ItemDoneCallback = Callable[[dict], None]
 ProgressCallback = Callable[[str, int, int], None]
+PhaseStartCallback = Callable[[str, int], None]
 ExtractProgressCallback = Callable[[int, int, int, int], None]
 TileProgressCallback = Callable[[int, int], None]
 SlideResult = dict[str, Any]

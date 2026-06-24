@@ -12,6 +12,7 @@ from trident.batch.region import attach_region_to_slide, is_region_entry
 from trident.batch.types import (
     ExtractProgressCallback,
     ItemDoneCallback,
+    PhaseStartCallback,
     PipelineConfig,
     ProgressCallback,
     SlideEntry,
@@ -199,6 +200,33 @@ def _expand_stages(stage: StageName) -> list[str]:
     return [stage]
 
 
+def _collect_phase_artifacts(
+    job_dir: str,
+    slide_name: str,
+    config: PipelineConfig,
+    phase: str,
+) -> dict[str, str | None]:
+    """Return on-disk artifact paths for a completed slide/step (under job_dir)."""
+    stem = _slide_stem(slide_name)
+    artifacts: dict[str, str | None] = {}
+    if phase == "segment":
+        geojson = os.path.join(job_dir, "contours_geojson", f"{stem}.geojson")
+        artifacts["segmentation_geojson"] = geojson if os.path.isfile(geojson) else None
+    elif phase == "patch":
+        coords_dir = _coords_dir(job_dir, config.target_mag, config.patch_size, config.overlap)
+        patches_h5 = os.path.join(coords_dir, "patches", f"{stem}_patches.h5")
+        artifacts["patches_h5"] = patches_h5 if os.path.isfile(patches_h5) else None
+    elif phase == "extract":
+        coords_dir = _coords_dir(job_dir, config.target_mag, config.patch_size, config.overlap)
+        features_dir = os.path.join(coords_dir, f"features_{config.patch_encoder}")
+        features_h5 = os.path.join(features_dir, f"{stem}.h5")
+        direct = config.features_h5_by_slide.get(slide_name) or config.features_h5_by_slide.get(stem)
+        if direct and os.path.isfile(direct):
+            features_h5 = direct
+        artifacts["features_h5"] = features_h5 if os.path.isfile(features_h5) else None
+    return artifacts
+
+
 def run_slide_batch(
     entries: list[SlideEntry],
     config: PipelineConfig,
@@ -208,6 +236,7 @@ def run_slide_batch(
     on_progress: ProgressCallback | None = None,
     on_extract_progress: ExtractProgressCallback | None = None,
     on_segment_tile_progress: TileProgressCallback | None = None,
+    on_phase_start: PhaseStartCallback | None = None,
 ) -> tuple[int, list[SlideResult]]:
     """Run segment / patch / extract in-process for a batch of slides."""
     device = _resolve_device(config.gpu_id)
@@ -256,6 +285,8 @@ def run_slide_batch(
         )
 
     for step in stages:
+        if on_phase_start is not None:
+            on_phase_start(step, total)
         step_done = 0
         for idx, entry in enumerate(entries):
             if idx in failed_errors:
@@ -299,6 +330,7 @@ def run_slide_batch(
                 failed_errors[idx] = str(exc)
                 logger.exception("Batch failed for %s at stage %s", entry.slide_name, step)
                 if on_item_done:
+                    job_dir = _job_dir(config.output_dir, entry.slide_name)
                     on_item_done(
                         {
                             "idx": idx,
@@ -307,6 +339,9 @@ def run_slide_batch(
                             "ok": False,
                             "error": (str(exc) or "")[:500],
                             "phase": step,
+                            "artifacts": _collect_phase_artifacts(
+                                job_dir, entry.slide_name, config, step
+                            ),
                         }
                     )
                 continue
@@ -315,6 +350,7 @@ def run_slide_batch(
             if on_progress:
                 on_progress(step, step_done, total)
             if on_item_done:
+                job_dir = _job_dir(config.output_dir, entry.slide_name)
                 on_item_done(
                     {
                         "idx": idx,
@@ -323,6 +359,9 @@ def run_slide_batch(
                         "ok": True,
                         "error": None,
                         "phase": step,
+                        "artifacts": _collect_phase_artifacts(
+                            job_dir, entry.slide_name, config, step
+                        ),
                     }
                 )
 

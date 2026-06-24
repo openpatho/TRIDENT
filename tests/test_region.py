@@ -59,6 +59,13 @@ class TestRegionInjection(unittest.TestCase):
         self.assertEqual(rings[0][0], (0.1, 0.2))
         self.assertEqual(rings[0][2], (0.3, 0.4))
 
+    def test_project_bbox_local_rings(self):
+        from trident.batch.region import _parse_bbox, _project_rings_to_slide_pixels
+        rings = [[(50.0, 50.0), (450.0, 50.0), (450.0, 450.0), (50.0, 450.0), (50.0, 50.0)]]
+        bbox = _parse_bbox({"x": 2000, "y": 3000, "width": 500, "height": 500})
+        projected = _project_rings_to_slide_pixels(rings, bbox, (10000, 8000))
+        self.assertEqual(projected[0][0], (2050.0, 3050.0))
+
 
 if __name__ == "__main__":
     unittest.main()

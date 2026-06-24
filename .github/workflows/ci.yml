@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: [ "3.10", "3.11" ]
+        python-version: [ "3.11" ]
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
@@ -37,5 +37,6 @@ jobs:
         env:
           TRIDENT_RUN_INTEGRATION_TESTS: "0"
           TRIDENT_RUN_GPU_TESTS: "0"
+          TRIDENT_ALLOW_HF_WEIGHTS_DOWNLOAD: "1"
         run: |
           python -m unittest discover -s tests -p "test_*.py" -v

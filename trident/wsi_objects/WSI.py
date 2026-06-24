@@ -328,7 +328,8 @@ class WSI:
         batch_size: int,
         collate_fn,
         num_workers: Optional[int],
-        inference_fn
+        inference_fn,
+        tile_progress_callback=None,
     ):
         """
         Segment semantic regions in the WSI using a specified segmentation model.
@@ -383,6 +384,8 @@ class WSI:
         width, height = self.get_dimensions()
         width, height = int(round(width * mpp_reduction_factor)), int(round(height * mpp_reduction_factor))
 
+        dataset_len = len(dataset)
+
         def _process_batches(ctx):
             dl_kwargs = dict(dataloader_kwargs)
             if ctx is not None:
@@ -390,6 +393,7 @@ class WSI:
             dataloader = DataLoader(**dl_kwargs)
             iterator = tqdm(dataloader) if verbose else dataloader
             local_mask = np.zeros((height, width), dtype=np.uint8)
+            tiles_done = 0
 
             for batch in iterator:
 
@@ -423,6 +427,10 @@ class WSI:
                         continue
                     patch_pred = preds[i][:y_end - y_start, :x_end - x_start]
                     local_mask[y_start:y_end, x_start:x_end] += patch_pred
+                if tile_progress_callback is not None:
+                    batch_n = len(preds) if hasattr(preds, "__len__") else batch_size
+                    tiles_done = min(dataset_len, tiles_done + int(batch_n))
+                    tile_progress_callback(tiles_done, dataset_len)
             return local_mask
 
         predicted_mask = _run_with_dataloader_ctx_fallback(
@@ -444,7 +452,8 @@ class WSI:
         batch_size: int = 16,
         device: str = 'cuda:0',
         verbose=False,
-        num_workers=None
+        num_workers=None,
+        tile_progress_callback=None,
     ) -> Union[str, gpd.GeoDataFrame]:
         """
         Segment tissue regions in the WSI using a specified segmentation model.
@@ -501,7 +510,8 @@ class WSI:
             batch_size,
             None,
             num_workers,
-            None
+            None,
+            tile_progress_callback=tile_progress_callback,
         )
         
         # Post-process the mask
@@ -889,7 +899,9 @@ class WSI:
         device: str = 'cuda:0',
         saveas: str = 'h5',
         batch_limit: int = 512,
-        verbose: bool = False
+        verbose: bool = False,
+        progress_callback=None,
+        features_h5_path: str | None = None,
     ) -> str:
         """
         Extract feature embeddings from the WSI using a specified patch encoder.
@@ -997,6 +1009,8 @@ class WSI:
             dataloader = DataLoader(**dl_kwargs)
             iterator = tqdm(dataloader) if verbose else dataloader
             collected = []
+            total_patches = len(dataset)
+            patches_done = 0
             for imgs, _ in iterator:
                 imgs = imgs.to(device)
                 with torch.autocast(
@@ -1006,6 +1020,9 @@ class WSI:
                 ):
                     batch_features = patch_encoder(imgs)
                 collected.append(batch_features.cpu().numpy())
+                patches_done += int(imgs.shape[0])
+                if progress_callback is not None:
+                    progress_callback(min(patches_done, total_patches), total_patches)
             return collected
 
         features_batches = _run_with_dataloader_ctx_fallback(
@@ -1020,10 +1037,16 @@ class WSI:
         features = np.concatenate(features_batches, axis=0)
 
         # Save the features to disk
-        os.makedirs(save_features, exist_ok=True)
+        out_h5 = os.path.join(save_features, f'{self.name}.{saveas}')
+        write_path = out_h5
+        if features_h5_path:
+            write_path = f"{features_h5_path}.partial"
+            os.makedirs(os.path.dirname(features_h5_path) or ".", exist_ok=True)
+        else:
+            os.makedirs(save_features, exist_ok=True)
         if saveas == 'h5':
             model_name = patch_encoder.enc_name if hasattr(patch_encoder, 'enc_name') else None
-            save_h5(os.path.join(save_features, f'{self.name}.{saveas}'),
+            save_h5(write_path,
                     assets = {
                         'features' : features,
                         'coords': coords,
@@ -1034,11 +1057,15 @@ class WSI:
                     },
                     mode='w')
         elif saveas == 'pt':
-            torch.save(features, os.path.join(save_features, f'{self.name}.{saveas}'))
+            torch.save(features, write_path)
         else:
             raise ValueError(f'Invalid save_features_as: {saveas}. Only "h5" and "pt" are supported.')
 
-        return os.path.join(save_features, f'{self.name}.{saveas}')
+        if features_h5_path:
+            os.replace(write_path, features_h5_path)
+            return features_h5_path
+
+        return out_h5
 
     @torch.inference_mode()
     def extract_slide_features(

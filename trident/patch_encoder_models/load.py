@@ -177,18 +177,18 @@ class BasePatchEncoder(torch.nn.Module):
         
     def _get_weights_path(self) -> str:
         """
-        If self.weights_path is provided, use it. 
-        If not provided, check the model registry. 
-            If path in model registry is empty, auto-download from huggingface
-            else, use the path from the registry.
+        If self.weights_path is provided, use it.
+        Otherwise resolve from env / export dir / registry; HF only when opted in.
         """
+        from trident.weights import resolve_patch_encoder_weights_path
+
         if self.weights_path:
             self.ensure_valid_weights_path(self.weights_path)
             return self.weights_path
-        else:
-            weights_path = get_weights_path('patch', self.enc_name)
-            self.ensure_valid_weights_path(weights_path)
-            return weights_path
+        path = resolve_patch_encoder_weights_path(self.enc_name or "")
+        if path:
+            return path
+        return ""
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

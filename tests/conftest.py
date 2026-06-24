@@ -1,27 +1,84 @@
-import os
+"""Pytest fixtures — stub optional heavy deps for lightweight unit tests."""
+
+from __future__ import annotations
+
 import sys
+import types
+from unittest.mock import MagicMock
 
+if "openslide" not in sys.modules:
+    openslide_stub = types.ModuleType("openslide")
+    openslide_stub.OpenSlide = MagicMock(name="OpenSlide")
+    openslide_stub.OpenSlideError = Exception
+    sys.modules["openslide"] = openslide_stub
 
-def _ensure_local_trident_first_on_syspath() -> None:
-    """
-    Ensure tests import *this* repo's `trident` package, not an installed one
-    or another checkout that happens to be on PYTHONPATH.
-    """
-    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    if sys.path[0] != repo_root:
-        sys.path.insert(0, repo_root)
+if "torch" not in sys.modules:
+    torch_stub = types.ModuleType("torch")
+    torch_nn = types.ModuleType("torch.nn")
+    torch_nn_functional = types.ModuleType("torch.nn.functional")
+    torch_nn.functional = torch_nn_functional
+    torch_stub.nn = torch_nn
+    torch_utils = types.ModuleType("torch.utils")
+    torch_utils_data = types.ModuleType("torch.utils.data")
+    torch_utils_data.DataLoader = MagicMock(name="DataLoader")
+    torch_utils.data = torch_utils_data
+    torch_stub.utils = torch_utils
+    cuda_stub = MagicMock()
+    cuda_stub.is_available = lambda: False
+    torch_stub.cuda = cuda_stub
+    torch_stub.device = MagicMock()
+    torch_stub.Tensor = MagicMock()
+    torch_stub.no_grad = MagicMock(return_value=MagicMock(__enter__=MagicMock(), __exit__=MagicMock()))
+    sys.modules["torch"] = torch_stub
+    sys.modules["torch.nn"] = torch_nn
+    sys.modules["torch.nn.functional"] = torch_nn_functional
+    sys.modules["torch.utils"] = torch_utils
+    sys.modules["torch.utils.data"] = torch_utils_data
 
-    mod = sys.modules.get("trident")
-    if mod is None:
-        return
+if "torchvision" not in sys.modules:
+    tv_stub = types.ModuleType("torchvision")
+    tv_transforms = types.ModuleType("torchvision.transforms")
+    tv_transforms.Compose = MagicMock()
+    tv_stub.transforms = tv_transforms
+    sys.modules["torchvision"] = tv_stub
+    sys.modules["torchvision.transforms"] = tv_transforms
 
-    mod_file = getattr(mod, "__file__", "") or ""
-    if not os.path.abspath(mod_file).startswith(repo_root):
-        # Evict foreign `trident` so subsequent imports use the local one.
-        for k in list(sys.modules.keys()):
-            if k == "trident" or k.startswith("trident."):
-                del sys.modules[k]
+if "timm" not in sys.modules:
+    timm_stub = types.ModuleType("timm")
+    timm_stub.create_model = MagicMock()
+    sys.modules["timm"] = timm_stub
 
+if "tqdm" not in sys.modules:
+    tqdm_stub = types.ModuleType("tqdm")
+    tqdm_stub.tqdm = MagicMock()
+    sys.modules["tqdm"] = tqdm_stub
 
-_ensure_local_trident_first_on_syspath()
+if "geopandas" not in sys.modules:
+    gpd_stub = types.ModuleType("geopandas")
+    gpd_stub.GeoDataFrame = MagicMock()
+    gpd_stub.read_file = MagicMock()
+    gpd_stub.gpd = gpd_stub
+    sys.modules["geopandas"] = gpd_stub
 
+if "cv2" not in sys.modules:
+    cv2_stub = types.ModuleType("cv2")
+    sys.modules["cv2"] = cv2_stub
+
+if "h5py" not in sys.modules:
+    h5py_stub = types.ModuleType("h5py")
+    h5py_stub.File = MagicMock()
+    sys.modules["h5py"] = h5py_stub
+
+if "shapely" not in sys.modules:
+    shapely_stub = types.ModuleType("shapely")
+    shapely_geometry = types.ModuleType("shapely.geometry")
+    shapely_geometry.Polygon = MagicMock()
+    shapely_stub.geometry = shapely_geometry
+    shapely_stub.Polygon = shapely_geometry.Polygon
+    sys.modules["shapely"] = shapely_stub
+    sys.modules["shapely.geometry"] = shapely_geometry
+
+if "pandas" not in sys.modules:
+    pd_stub = types.ModuleType("pandas")
+    pd_stub.DataFrame = MagicMock()
+    sys.modules["pandas"] = pd_stub

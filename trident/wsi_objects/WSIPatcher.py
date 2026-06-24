@@ -313,7 +313,12 @@ class WSIPatcher:
             bbox_mask = np.zeros(len(coords), dtype=bool)
             
         
-        union_mask = mask.union_all()
+        geoms = mask.geometry
+        union_mask = (
+            geoms.union_all()
+            if hasattr(geoms, "union_all")
+            else geoms.unary_union
+        )
 
         squares = [
             Polygon([

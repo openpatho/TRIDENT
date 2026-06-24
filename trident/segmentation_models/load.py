@@ -75,9 +75,10 @@ class HESTSegmenter(SegmentationModel):
         """
 
         from torchvision.models.segmentation import deeplabv3_resnet50
+        from trident.weights import resolve_segmentation_weights_path
 
         model_ckpt_name = 'deeplabv3_seg_v4.ckpt'
-        weights_path = get_weights_path('seg', 'hest')
+        weights_path = resolve_segmentation_weights_path('hest')
 
         # Check if a path is provided but doesn't exist
         if weights_path and not os.path.isfile(weights_path):
@@ -90,10 +91,10 @@ class HESTSegmenter(SegmentationModel):
         if not weights_path:
             if not SegmentationModel._has_internet:
                 raise FileNotFoundError(
-                    f"Internet connection not available and checkpoint not found locally in model registry at trident/segmentation_models/local_ckpts.json.\n\n"
-                    f"To proceed, please manually download {model_ckpt_name} from:\n"
+                    f"Internet connection not available and checkpoint not found locally.\n\n"
+                    f"To proceed, set TRIDENT_HEST_CKPT or manually download {model_ckpt_name} from:\n"
                     f"https://huggingface.co/MahmoodLab/hest-tissue-seg/\n"
-                    f"and place it at:\nlocal_ckpts.json"
+                    f"Set TRIDENT_ALLOW_HF_WEIGHTS_DOWNLOAD=1 to permit HuggingFace download."
                 )
 
             # If internet is available, download from HuggingFace

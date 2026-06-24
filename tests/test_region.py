@@ -5,7 +5,11 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
-from trident.batch.region import attach_region_to_slide, is_region_entry
+from trident.batch.region import (
+    _rings_from_polygons,
+    attach_region_to_slide,
+    is_region_entry,
+)
 from trident.batch.types import SlideEntry
 
 
@@ -45,6 +49,15 @@ class TestRegionInjection(unittest.TestCase):
         self.assertEqual(count, 1)
         self.assertIs(slide.gdf_contours, gdf)
         self.assertIsNone(slide.tissue_seg_path)
+
+    def test_rings_from_geojson_polygon_coordinates(self):
+        rings = _rings_from_polygons([{
+            "type": "Polygon",
+            "coordinates": [[[0.1, 0.2], [0.3, 0.2], [0.3, 0.4], [0.1, 0.4], [0.1, 0.2]]],
+        }])
+        self.assertEqual(len(rings), 1)
+        self.assertEqual(rings[0][0], (0.1, 0.2))
+        self.assertEqual(rings[0][2], (0.3, 0.4))
 
 
 if __name__ == "__main__":

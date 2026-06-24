@@ -33,21 +33,62 @@ def is_region_entry(entry: SlideEntry | dict | None) -> bool:
     return has_polys and source_type not in {"", "slide_collection", "slide"}
 
 
+def _ring_from_flat_points(coords) -> list[tuple[float, float]]:
+    ring: list[tuple[float, float]] = []
+    for pt in coords or []:
+        if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+            if isinstance(pt[0], (list, tuple)):
+                continue
+            ring.append((float(pt[0]), float(pt[1])))
+    return ring
+
+
+def _extract_polygon_rings(value) -> list[list[tuple[float, float]]]:
+    """Match worker manifest polygon shapes (GeoJSON Polygon/MultiPolygon, flat rings)."""
+    if not value:
+        return []
+    if isinstance(value, list):
+        rings: list[list[tuple[float, float]]] = []
+        for item in value:
+            rings.extend(_extract_polygon_rings(item))
+        return rings
+    if not isinstance(value, dict):
+        return []
+    if value.get("type") == "FeatureCollection":
+        return _extract_polygon_rings(value.get("features") or [])
+    if value.get("type") == "Feature":
+        return _extract_polygon_rings(value.get("geometry"))
+    geom_type = str(value.get("type") or "").lower()
+    coords = value.get("coordinates")
+    if geom_type == "polygon" and isinstance(coords, list):
+        outer = coords[0] if coords else []
+        ring = _ring_from_flat_points(outer)
+        return [ring] if len(ring) >= 3 else []
+    if geom_type == "multipolygon" and isinstance(coords, list):
+        rings = []
+        for polygon in coords:
+            outer = polygon[0] if polygon else []
+            ring = _ring_from_flat_points(outer)
+            if len(ring) >= 3:
+                rings.append(ring)
+        return rings
+    points = value.get("points")
+    if isinstance(points, list):
+        ring = [
+            (float(p.get("x")), float(p.get("y")))
+            for p in points
+            if isinstance(p, dict) and p.get("x") is not None and p.get("y") is not None
+        ]
+        return [ring] if len(ring) >= 3 else []
+    ring_coords = coords or value.get("ring")
+    if isinstance(ring_coords, list):
+        ring = _ring_from_flat_points(ring_coords)
+        return [ring] if len(ring) >= 3 else []
+    return []
+
+
 def _rings_from_polygons(polygons: list | None) -> list[list[tuple[float, float]]]:
-    rings: list[list[tuple[float, float]]] = []
-    for poly in polygons or []:
-        if not isinstance(poly, dict):
-            continue
-        coords = poly.get("coordinates") or poly.get("ring") or poly.get("points")
-        if not coords:
-            continue
-        ring: list[tuple[float, float]] = []
-        for pt in coords:
-            if isinstance(pt, (list, tuple)) and len(pt) >= 2:
-                ring.append((float(pt[0]), float(pt[1])))
-        if len(ring) >= 3:
-            rings.append(ring)
-    return rings
+    return _extract_polygon_rings(polygons)
 
 
 def _project_ring(

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 import numpy as np
 import os 
 import warnings
@@ -213,11 +214,29 @@ class WSI:
             self.properties = None
             self.mag = None
             if self.tissue_seg_path is not None:
-                import geopandas as gpd
                 try:
-                    self.gdf_contours = gpd.read_file(self.tissue_seg_path)
+                    from trident.batch.geojson_io import load_segmentation_geojson_gdf
+
+                    self.gdf_contours = load_segmentation_geojson_gdf(self.tissue_seg_path)
                 except FileNotFoundError:
-                    raise FileNotFoundError(f"Tissue segmentation file not found: {self.tissue_seg_path}")
+                    raise FileNotFoundError(
+                        f"Tissue segmentation file not found: {self.tissue_seg_path}"
+                    ) from None
+                except Exception as exc:
+                    import geopandas as gpd
+
+                    _log = logging.getLogger(__name__)
+                    _log.warning(
+                        "Fiona-free GeoJSON load failed for %s (%s); trying gpd.read_file",
+                        self.tissue_seg_path,
+                        exc,
+                    )
+                    try:
+                        self.gdf_contours = gpd.read_file(self.tissue_seg_path)
+                    except FileNotFoundError:
+                        raise FileNotFoundError(
+                            f"Tissue segmentation file not found: {self.tissue_seg_path}"
+                        ) from None
 
     def create_patcher(
         self, 

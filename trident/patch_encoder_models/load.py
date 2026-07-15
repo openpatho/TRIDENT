@@ -1395,6 +1395,69 @@ class H0MiniInferenceEncoder(BasePatchEncoder):
         """
         super().__init__(**build_kwargs)
 
+    @staticmethod
+    def _resolve_h0_mini_model_dir(weights_path: str) -> str:
+        """Return the HF export directory that contains config.json + weights."""
+        if os.path.isdir(weights_path):
+            model_dir = weights_path
+        else:
+            model_dir = os.path.dirname(weights_path)
+        config_path = os.path.join(model_dir, "config.json")
+        if not os.path.isfile(config_path):
+            raise FileNotFoundError(
+                f"H0-mini export dir missing config.json at '{model_dir}'. "
+                "Stage the full HF snapshot under HF_HOME/export/h0-mini/."
+            )
+        return model_dir
+
+    @staticmethod
+    def _load_h0_mini_state_dict(weight_file: str):
+        if weight_file.endswith(".safetensors"):
+            from safetensors.torch import load_file
+            return load_file(weight_file)
+        state = torch.load(weight_file, map_location="cpu")
+        if isinstance(state, dict):
+            if "state_dict" in state and isinstance(state["state_dict"], dict):
+                return state["state_dict"]
+            if "model" in state and isinstance(state["model"], dict):
+                return state["model"]
+        return state
+
+    def _build_h0_mini_from_local(self, weights_path: str, img_size: int):
+        """Load H0-mini from a local HF export directory (config.json + weights)."""
+        import json
+        import timm
+
+        model_dir = self._resolve_h0_mini_model_dir(weights_path)
+        with open(os.path.join(model_dir, "config.json"), "r", encoding="utf-8") as fh:
+            cfg = json.load(fh)
+
+        weight_candidates = [
+            os.path.join(model_dir, "pytorch_model.bin"),
+            os.path.join(model_dir, "model.safetensors"),
+        ]
+        weight_file = next((path for path in weight_candidates if os.path.isfile(path)), None)
+        if weight_file is None:
+            raise FileNotFoundError(
+                f"H0-mini weights not found under '{model_dir}' "
+                "(expected pytorch_model.bin or model.safetensors)."
+            )
+
+        create_kwargs = {
+            "pretrained": False,
+            "mlp_layer": timm.layers.SwiGLUPacked,
+            "act_layer": torch.nn.SiLU,
+            "img_size": img_size,
+            "dynamic_img_size": True,
+            "num_classes": 0,
+        }
+        # Prefer architecture from the staged HF config; fall back to ViT-B/14 + registers.
+        arch = cfg.get("architecture") or "vit_base_patch14_reg4_dinov2"
+        model = timm.create_model(arch, **create_kwargs)
+        state_dict = self._load_h0_mini_state_dict(weight_file)
+        model.load_state_dict(state_dict, strict=True)
+        return model
+
     def _build(self, return_type: Literal["cls_token", "cls+mean"] = "cls_token", target_img_size=None):
         import timm
         from timm.data import resolve_model_data_config
@@ -1406,27 +1469,32 @@ class H0MiniInferenceEncoder(BasePatchEncoder):
         img_size = _resolve_target_img_size(self.enc_name, target_img_size, 224, 14)
 
         if weights_path:
-            raise NotImplementedError(
-                "H0-mini currently supports loading from Hugging Face only. "
-                "Please leave `weights_path` unset."
-            )
-
-        self.ensure_has_internet(self.enc_name)
-        try:
-            model = timm.create_model(
-                "hf-hub:bioptimus/H0-mini",
-                pretrained=True,
-                mlp_layer=timm.layers.SwiGLUPacked,
-                act_layer=torch.nn.SiLU,
-                img_size=img_size,
-                dynamic_img_size=True,
-            )
-        except Exception:
-            traceback.print_exc()
-            raise Exception(
-                "Failed to download H0-mini model, make sure that you were granted access "
-                "and that you correctly registered your token"
-            )
+            try:
+                model = self._build_h0_mini_from_local(weights_path, img_size)
+            except Exception:
+                traceback.print_exc()
+                raise Exception(
+                    f"Failed to create H0-mini model from local checkpoint at '{weights_path}'. "
+                    "Stage the full HF snapshot (config.json + pytorch_model.bin/model.safetensors) "
+                    "to HF_HOME/export/h0-mini/ via platform S3 sync."
+                )
+        else:
+            self.ensure_has_internet(self.enc_name)
+            try:
+                model = timm.create_model(
+                    "hf-hub:bioptimus/H0-mini",
+                    pretrained=True,
+                    mlp_layer=timm.layers.SwiGLUPacked,
+                    act_layer=torch.nn.SiLU,
+                    img_size=img_size,
+                    dynamic_img_size=True,
+                )
+            except Exception:
+                traceback.print_exc()
+                raise Exception(
+                    "Failed to download H0-mini model, make sure that you were granted access "
+                    "and that you correctly registered your token"
+                )
 
         # timm>=0.9 expects the model instance directly here.
         data_config = resolve_model_data_config(model)

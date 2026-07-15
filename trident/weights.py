@@ -9,6 +9,7 @@ from trident.IO import get_weights_path
 
 HEST_CKPT_FILENAME = "deeplabv3_seg_v4.ckpt"
 HOPTIMUS0_WEIGHTS_FILENAME = "pytorch_model.bin"
+H0_MINI_WEIGHTS_FILENAMES = ("pytorch_model.bin", "model.safetensors")
 
 _ENV_SEG = {
     "hest": ("TRIDENT_HEST_CKPT",),
@@ -19,6 +20,8 @@ _ENV_SEG = {
 _ENV_PATCH = {
     "hoptimus0": ("TRIDENT_HOPTIMUS0_CKPT", "TRIDENT_ENCODER_CKPT"),
     "hoptimus1": ("TRIDENT_HOPTIMUS1_CKPT", "TRIDENT_ENCODER_CKPT"),
+    # Prefer underscore env key; hyphenated TRIDENT_H0-MINI_CKPT is never read.
+    "h0-mini": ("TRIDENT_H0_MINI_CKPT", "TRIDENT_ENCODER_CKPT"),
 }
 
 
@@ -110,6 +113,12 @@ def resolve_patch_encoder_weights_path(
         found = _first_existing_file(_export_dir_weights("hoptimus0", HOPTIMUS0_WEIGHTS_FILENAME))
         if found:
             return found
+
+    if enc == "h0-mini":
+        for filename in H0_MINI_WEIGHTS_FILENAMES:
+            found = _first_existing_file(_export_dir_weights("h0-mini", filename))
+            if found:
+                return found
 
     registry_path = get_weights_path("patch", enc)
     if registry_path and (os.path.isfile(registry_path) or os.path.isdir(registry_path)):

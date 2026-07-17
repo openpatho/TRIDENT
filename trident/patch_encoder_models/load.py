@@ -1443,7 +1443,11 @@ class H0MiniInferenceEncoder(BasePatchEncoder):
                 "(expected pytorch_model.bin or model.safetensors)."
             )
 
+        # HF hub config carries Bioptimus-specific dims (e.g. mlp_ratio=5.33334).
+        # Omitting model_args yields MLP size mismatches and a misleading "stage weights" error.
+        model_args = dict(cfg.get("model_args") or {})
         create_kwargs = {
+            **model_args,
             "pretrained": False,
             "mlp_layer": timm.layers.SwiGLUPacked,
             "act_layer": torch.nn.SiLU,
@@ -1471,13 +1475,14 @@ class H0MiniInferenceEncoder(BasePatchEncoder):
         if weights_path:
             try:
                 model = self._build_h0_mini_from_local(weights_path, img_size)
-            except Exception:
+            except Exception as exc:
                 traceback.print_exc()
                 raise Exception(
                     f"Failed to create H0-mini model from local checkpoint at '{weights_path}'. "
-                    "Stage the full HF snapshot (config.json + pytorch_model.bin/model.safetensors) "
-                    "to HF_HOME/export/h0-mini/ via platform S3 sync."
-                )
+                    "Ensure the full HF snapshot (config.json + pytorch_model.bin/model.safetensors) "
+                    "is under HF_HOME/export/h0-mini/ and that config.json model_args match the weights. "
+                    f"Underlying error: {exc}"
+                ) from exc
         else:
             self.ensure_has_internet(self.enc_name)
             try:

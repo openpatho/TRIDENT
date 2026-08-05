@@ -23,7 +23,40 @@ from trident.batch.types import (
 
 logger = logging.getLogger(__name__)
 
-SEGMENT_TARGET_MAG = 1.25
+# Must match HESTSegmenter.target_mag (10). The prior 1.25× default under-/over-segments
+# tissue because HEST was trained/run at 10× (see MahmoodLab HEST tissue-seg).
+SEGMENT_TARGET_MAG = 10.0
+_DEFAULT_MIN_TISSUE_PROPORTION = 0.10
+
+
+def _resolve_segment_target_mag(segmenter) -> float:
+    raw = os.environ.get("OPENPATHO_SEGMENT_TARGET_MAG", "").strip()
+    if raw:
+        try:
+            value = float(raw)
+            if value > 0:
+                return value
+        except (TypeError, ValueError):
+            pass
+    model_mag = getattr(segmenter, "target_mag", None)
+    if model_mag is not None:
+        try:
+            value = float(model_mag)
+            if value > 0:
+                return value
+        except (TypeError, ValueError):
+            pass
+    return float(SEGMENT_TARGET_MAG)
+
+
+def _resolve_min_tissue_proportion() -> float:
+    raw = os.environ.get("OPENPATHO_MIN_TISSUE_PROPORTION", "").strip()
+    if raw:
+        try:
+            return max(0.0, min(1.0, float(raw)))
+        except (TypeError, ValueError):
+            pass
+    return float(_DEFAULT_MIN_TISSUE_PROPORTION)
 
 
 def _slide_stem(slide_name: str) -> str:
@@ -126,7 +159,7 @@ def _run_segment(
     try:
         seg_kwargs = dict(
             segmentation_model=segmenter,
-            target_mag=SEGMENT_TARGET_MAG,
+            target_mag=_resolve_segment_target_mag(segmenter),
             job_dir=job_dir,
             device=device,
             holes_are_tissue=True,
@@ -153,6 +186,7 @@ def _run_patch(entry: SlideEntry, config: PipelineConfig) -> str:
             patch_size=config.patch_size,
             save_coords=save_coords,
             overlap=config.overlap,
+            min_tissue_proportion=_resolve_min_tissue_proportion(),
         )
         return coords_path
     finally:

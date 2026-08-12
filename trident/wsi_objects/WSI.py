@@ -48,10 +48,19 @@ def _preferred_dataloader_start_methods() -> list[str]:
     Default prefers ``spawn`` after CUDA init (fork-after-CUDA + filelock is
     unsafe under high worker counts). Override with
     ``TRIDENT_DATALOADER_START_METHOD=spawn|fork|auto``.
+
+    When ``spawn`` is selected (explicitly or via auto), ``fork`` is still
+    appended as a pickling fallback when ``TRIDENT_DATALOADER_ALLOW_FORK=1``.
     """
     raw = os.environ.get('TRIDENT_DATALOADER_START_METHOD', 'auto').strip().lower()
-    if raw in {'spawn', 'fork'}:
-        methods = [raw]
+    allow_fork = _env_flag('TRIDENT_DATALOADER_ALLOW_FORK', default=False)
+
+    if raw == 'fork':
+        methods = ['fork'] if allow_fork else []
+    elif raw == 'spawn':
+        methods = ['spawn']
+        if allow_fork:
+            methods.append('fork')
     else:
         cuda_ready = False
         try:
@@ -59,12 +68,8 @@ def _preferred_dataloader_start_methods() -> list[str]:
         except Exception:
             cuda_ready = False
         methods = ['spawn', 'fork'] if cuda_ready else ['fork', 'spawn']
-
-    # Fork-after-CUDA is opt-in: without it we skip fork and fall through to
-    # single-process (num_workers=0) rather than risk filelock deadlocks.
-    allow_fork = _env_flag('TRIDENT_DATALOADER_ALLOW_FORK', default=False)
-    if not allow_fork:
-        methods = [m for m in methods if m != 'fork']
+        if not allow_fork:
+            methods = [m for m in methods if m != 'fork']
     return methods
 
 

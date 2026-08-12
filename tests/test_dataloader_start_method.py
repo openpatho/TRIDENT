@@ -112,6 +112,18 @@ def test_preferred_methods_allow_fork_when_opt_in():
         assert _preferred_dataloader_start_methods() == ["spawn", "fork"]
 
 
+def test_preferred_methods_explicit_spawn_keeps_fork_fallback():
+    with mock.patch.dict(
+        os.environ,
+        {
+            "TRIDENT_DATALOADER_START_METHOD": "spawn",
+            "TRIDENT_DATALOADER_ALLOW_FORK": "1",
+        },
+        clear=False,
+    ):
+        assert _preferred_dataloader_start_methods() == ["spawn", "fork"]
+
+
 def test_preferred_methods_explicit_fork_requires_allow():
     with mock.patch.dict(
         os.environ,

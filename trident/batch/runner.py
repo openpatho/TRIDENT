@@ -257,10 +257,21 @@ def run_slide_batch(
 
     for step in stages:
         step_done = 0
-        for idx, entry in enumerate(entries):
-            if idx in failed_errors:
+        # Prefer parent/wave idxs when unique (multi-GPU shards). If callers left
+        # the default idx=0 on every entry, fall back to local enumerate.
+        parent_idxs: list[int] = []
+        for local_i, entry in enumerate(entries):
+            raw_idx = getattr(entry, "idx", None)
+            try:
+                parent_idxs.append(int(raw_idx) if raw_idx is not None else int(local_i))
+            except (TypeError, ValueError):
+                parent_idxs.append(int(local_i))
+        use_parent_idx = len(parent_idxs) == len(set(parent_idxs))
+
+        for local_i, entry in enumerate(entries):
+            emit_idx = parent_idxs[local_i] if use_parent_idx else int(local_i)
+            if emit_idx in failed_errors:
                 continue
-            entry.idx = idx
             try:
                 if step == "segment":
                     tile_cb = on_segment_tile_progress
@@ -283,7 +294,7 @@ def run_slide_batch(
                     extract_cb = None
                     if on_extract_progress:
 
-                        def extract_cb(done: int, patch_total: int, _idx: int = idx) -> None:
+                        def extract_cb(done: int, patch_total: int, _idx: int = emit_idx) -> None:
                             on_extract_progress(_idx, done, patch_total, total)
 
                     _run_extract(
@@ -296,12 +307,12 @@ def run_slide_batch(
                 else:
                     raise ValueError(f"Unsupported stage: {step}")
             except Exception as exc:
-                failed_errors[idx] = str(exc)
+                failed_errors[emit_idx] = str(exc)
                 logger.exception("Batch failed for %s at stage %s", entry.slide_name, step)
                 if on_item_done:
                     on_item_done(
                         {
-                            "idx": idx,
+                            "idx": emit_idx,
                             "slide_name": entry.slide_name,
                             "stem": _slide_stem(entry.slide_name),
                             "ok": False,
@@ -317,7 +328,7 @@ def run_slide_batch(
             if on_item_done:
                 on_item_done(
                     {
-                        "idx": idx,
+                        "idx": emit_idx,
                         "slide_name": entry.slide_name,
                         "stem": _slide_stem(entry.slide_name),
                         "ok": True,
@@ -326,15 +337,24 @@ def run_slide_batch(
                     }
                 )
 
-    for idx, entry in enumerate(entries):
-        if idx in failed_errors:
+    parent_idxs = []
+    for local_i, entry in enumerate(entries):
+        raw_idx = getattr(entry, "idx", None)
+        try:
+            parent_idxs.append(int(raw_idx) if raw_idx is not None else int(local_i))
+        except (TypeError, ValueError):
+            parent_idxs.append(int(local_i))
+    use_parent_idx = len(parent_idxs) == len(set(parent_idxs))
+    for local_i, entry in enumerate(entries):
+        emit_idx = parent_idxs[local_i] if use_parent_idx else int(local_i)
+        if emit_idx in failed_errors:
             results.append(
                 {
                     "slide_name": entry.slide_name,
                     "slide_key": entry.slide_key,
                     "slide_id": entry.slide_id,
                     "status": "failed",
-                    "error": failed_errors[idx],
+                    "error": failed_errors[emit_idx],
                 }
             )
         else:

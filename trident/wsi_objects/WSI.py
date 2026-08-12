@@ -27,6 +27,12 @@ _SPAWN_PICKLING_MSGS = (
     "PicklingError",
     'cannot pickle',
 )
+# Fork-after-CUDA / HuggingFace cache races — fall through to num_workers=0.
+_UNSAFE_DATALOADER_MSGS = (
+    'os.fork is unsafe',
+    'filelock',
+    'FileLock',
+)
 
 
 def _warn_ctx_fallback_once(key: str, message: str) -> None:
@@ -112,12 +118,21 @@ def _run_with_dataloader_ctx_fallback(run_fn, num_workers: int, warn_key: str, w
                 )
             return run_fn(ctx)
         except Exception as err:
-            is_pickling_issue = any(msg in str(err) for msg in _SPAWN_PICKLING_MSGS)
+            err_s = str(err)
+            is_pickling_issue = any(msg in err_s for msg in _SPAWN_PICKLING_MSGS)
+            is_unsafe_mp = any(msg in err_s for msg in _UNSAFE_DATALOADER_MSGS)
             # `ctx is None` is the single-process fallback: nothing left to try.
-            if ctx is None or not is_pickling_issue:
+            if ctx is None or not (is_pickling_issue or is_unsafe_mp):
                 raise
             last_err = err
-            _warn_ctx_fallback_once(warn_key, warn_msg)
+            if is_unsafe_mp:
+                _warn_ctx_fallback_once(
+                    f'{warn_key}_unsafe_mp',
+                    f"[WSI] DataLoader start method failed for {fail_label} "
+                    f"(fork/filelock unsafe); trying next candidate.",
+                )
+            else:
+                _warn_ctx_fallback_once(warn_key, warn_msg)
 
     raise last_err if last_err is not None else RuntimeError(f'Failed to build {fail_label}')
 
@@ -219,6 +234,19 @@ class WSI:
         """Drop backend handles so DataLoader spawn workers can pickle the WSI."""
         state = self.__dict__.copy()
         state.pop('img', None)
+        # OpenSlide `_PropertyMap` holds ctypes pointers — not picklable.
+        state.pop('properties', None)
+        # Normalize pyramid metadata to plain Python (OpenSlide may use tuples
+        # wrapping C values that fail under spawn).
+        if state.get('level_downsamples') is not None:
+            state['level_downsamples'] = tuple(float(x) for x in state['level_downsamples'])
+        if state.get('level_dimensions') is not None:
+            state['level_dimensions'] = tuple(
+                (int(w), int(h)) for w, h in state['level_dimensions']
+            )
+        if state.get('dimensions') is not None:
+            w, h = state['dimensions']
+            state['dimensions'] = (int(w), int(h))
         # Workers reopen via _lazy_initialize on first use.
         state['_initialized'] = False
         return state
@@ -226,6 +254,8 @@ class WSI:
     def __setstate__(self, state):
         self.__dict__.update(state)
         self._initialized = False
+        if not hasattr(self, 'properties'):
+            self.properties = None
 
     def __repr__(self) -> str:
         if self._initialized:

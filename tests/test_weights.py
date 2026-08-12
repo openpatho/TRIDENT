@@ -9,6 +9,7 @@ from unittest import mock
 
 from trident.weights import (
     hf_weights_download_allowed,
+    resolve_patch_encoder_weights_path,
     resolve_segmentation_weights_path,
 )
 
@@ -44,6 +45,29 @@ class TestWeightsResolution(unittest.TestCase):
             self.assertTrue(hf_weights_download_allowed())
             with mock.patch("trident.weights.get_weights_path", return_value=""):
                 self.assertEqual(resolve_segmentation_weights_path("hest"), "")
+
+    def test_h0_mini_ignores_generic_encoder_ckpt(self):
+        """Boot-default TRIDENT_ENCODER_CKPT must not poison h0-mini resolution."""
+        with tempfile.TemporaryDirectory() as tmp:
+            hopt = os.path.join(tmp, "pytorch_model.bin")
+            with open(hopt, "wb") as fh:
+                fh.write(b"x" * 64)
+            env = {
+                "TRIDENT_ENCODER_CKPT": hopt,
+                "TRIDENT_H0_MINI_CKPT": "",
+                "TRIDENT_ALLOW_HF_WEIGHTS_DOWNLOAD": "1",
+            }
+            with mock.patch.dict(os.environ, env, clear=False):
+                with mock.patch("trident.weights.get_weights_path", return_value=""):
+                    self.assertEqual(resolve_patch_encoder_weights_path("h0-mini"), "")
+
+    def test_h0_mini_resolves_snapshot_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = os.path.join(tmp, "config.json")
+            with open(cfg, "w", encoding="utf-8") as fh:
+                fh.write("{}")
+            with mock.patch.dict(os.environ, {"TRIDENT_H0_MINI_CKPT": tmp}, clear=False):
+                self.assertEqual(resolve_patch_encoder_weights_path("h0-mini"), tmp)
 
 
 if __name__ == "__main__":

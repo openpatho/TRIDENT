@@ -1405,39 +1405,60 @@ class H0MiniInferenceEncoder(BasePatchEncoder):
         self.return_type = return_type
         img_size = _resolve_target_img_size(self.enc_name, target_img_size, 224, 14)
 
-        # Platform S3 sync drops a HF-style snapshot (config.json + weights). Prefer that
-        # local directory so Batch workers stay offline-friendly; fall back to Hub.
-        model_source = "hf-hub:bioptimus/H0-mini"
+        local_dir = None
         if weights_path:
-            model_dir = weights_path if os.path.isdir(weights_path) else os.path.dirname(weights_path)
-            if model_dir and os.path.isfile(os.path.join(model_dir, "config.json")):
-                model_source = model_dir
-            else:
-                raise NotImplementedError(
-                    "H0-mini local checkpoint must be an HF snapshot directory "
-                    f"(config.json + weights); got '{weights_path}'. "
-                    "Leave weights_path unset to download from Hugging Face, or sync "
-                    "platform/ml/weights/h0-mini from shared public S3."
-                )
-        else:
-            self.ensure_has_internet(self.enc_name)
+            candidate = weights_path if os.path.isdir(weights_path) else os.path.dirname(weights_path)
+            if candidate and os.path.isfile(os.path.join(candidate, "config.json")):
+                local_dir = candidate
 
-        try:
-            model = timm.create_model(
-                model_source,
-                pretrained=True,
+        def _create(*, pretrained: bool):
+            return timm.create_model(
+                "hf-hub:bioptimus/H0-mini",
+                pretrained=pretrained,
                 mlp_layer=timm.layers.SwiGLUPacked,
                 act_layer=torch.nn.SiLU,
                 img_size=img_size,
                 dynamic_img_size=True,
             )
-        except Exception:
-            traceback.print_exc()
-            raise Exception(
-                "Failed to load H0-mini model from "
-                f"'{model_source}'. For Hub downloads, confirm access + HF token; "
-                "for local S3 sync, confirm config.json and model weights exist."
-            )
+
+        model = None
+        # Prefer architecture from Hub id + weights from S3 snapshot (timm cannot
+        # treat a bare snapshot folder as hf-hub:bioptimus/H0-mini).
+        if local_dir:
+            try:
+                self.ensure_has_internet(self.enc_name)
+                model = _create(pretrained=False)
+                weight_file = None
+                for name in ("model.safetensors", "pytorch_model.bin"):
+                    path = os.path.join(local_dir, name)
+                    if os.path.isfile(path):
+                        weight_file = path
+                        break
+                if not weight_file:
+                    raise FileNotFoundError(f"No model weights under {local_dir}")
+                if weight_file.endswith(".safetensors"):
+                    from safetensors.torch import load_file
+
+                    state = load_file(weight_file)
+                else:
+                    state = torch.load(weight_file, map_location="cpu", weights_only=True)
+                if isinstance(state, dict) and "state_dict" in state:
+                    state = state["state_dict"]
+                model.load_state_dict(state, strict=False)
+            except Exception:
+                traceback.print_exc()
+                model = None
+
+        if model is None:
+            self.ensure_has_internet(self.enc_name)
+            try:
+                model = _create(pretrained=True)
+            except Exception:
+                traceback.print_exc()
+                raise Exception(
+                    "Failed to download H0-mini model, make sure that you were granted access "
+                    "and that you correctly registered your token"
+                )
 
         # timm>=0.9 expects the model instance directly here.
         data_config = resolve_model_data_config(model)

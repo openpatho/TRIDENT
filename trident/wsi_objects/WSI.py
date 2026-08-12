@@ -25,6 +25,7 @@ _SPAWN_PICKLING_MSGS = (
     'ctypes objects containing pointers cannot be pickled',
     "Can't pickle",
     "PicklingError",
+    'cannot pickle',
 )
 
 
@@ -34,13 +35,45 @@ def _warn_ctx_fallback_once(key: str, message: str) -> None:
         _WARNED_CTX_FALLBACKS.add(key)
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name, '').strip().lower()
+    if not raw:
+        return default
+    return raw in {'1', 'true', 'yes', 'on'}
+
+
+def _preferred_dataloader_start_methods() -> list[str]:
+    """Resolve DataLoader start-method order.
+
+    Default prefers ``spawn`` after CUDA init (fork-after-CUDA + filelock is
+    unsafe under high worker counts). Override with
+    ``TRIDENT_DATALOADER_START_METHOD=spawn|fork|auto``.
+    """
+    raw = os.environ.get('TRIDENT_DATALOADER_START_METHOD', 'auto').strip().lower()
+    if raw in {'spawn', 'fork'}:
+        methods = [raw]
+    else:
+        cuda_ready = False
+        try:
+            cuda_ready = bool(torch.cuda.is_available())
+        except Exception:
+            cuda_ready = False
+        methods = ['spawn', 'fork'] if cuda_ready else ['fork', 'spawn']
+
+    # Fork-after-CUDA is opt-in: without it we skip fork and fall through to
+    # single-process (num_workers=0) rather than risk filelock deadlocks.
+    allow_fork = _env_flag('TRIDENT_DATALOADER_ALLOW_FORK', default=False)
+    if not allow_fork:
+        methods = [m for m in methods if m != 'fork']
+    return methods
+
+
 def _dataloader_context_candidates(num_workers: int):
     if not num_workers or num_workers <= 0:
         return [None]
 
     candidates = []
-    # Prefer fork on POSIX to avoid spawn pickling issues with complex objects.
-    for method in ('fork', 'spawn'):
+    for method in _preferred_dataloader_start_methods():
         try:
             if method in mp.get_all_start_methods():
                 ctx = mp.get_context(method)
@@ -49,6 +82,7 @@ def _dataloader_context_candidates(num_workers: int):
         except (ValueError, AttributeError):
             continue
 
+    # Final fallback: in-process loader (no multiprocessing).
     candidates.append(None)
     return candidates
 
@@ -57,11 +91,20 @@ def _run_with_dataloader_ctx_fallback(run_fn, num_workers: int, warn_key: str, w
     """
     Try `run_fn(ctx)` for each candidate multiprocessing context. Only
     pickling-related errors are swallowed (so we can fall back to the next
-    candidate, e.g. 'fork' or single-process). Any other error propagates.
+    candidate, e.g. single-process). Any other error propagates.
+
+    ``run_fn`` must honour ``ctx is None`` by using ``num_workers=0`` (in-process)
+    so we never silently re-enter the default fork start method.
     """
     last_err = None
     for ctx in _dataloader_context_candidates(num_workers):
         try:
+            if ctx is None and num_workers and num_workers > 0:
+                _warn_ctx_fallback_once(
+                    f'{warn_key}_single_process',
+                    f"[WSI] DataLoader falling back to num_workers=0 for {fail_label} "
+                    f"(spawn unavailable/unpicklable; fork disabled by default).",
+                )
             return run_fn(ctx)
         except Exception as err:
             is_pickling_issue = any(msg in str(err) for msg in _SPAWN_PICKLING_MSGS)
@@ -72,7 +115,6 @@ def _run_with_dataloader_ctx_fallback(run_fn, num_workers: int, warn_key: str, w
             _warn_ctx_fallback_once(warn_key, warn_msg)
 
     raise last_err if last_err is not None else RuntimeError(f'Failed to build {fail_label}')
-
 
 class WSI:
     """
@@ -167,6 +209,18 @@ class WSI:
 
         if not self.lazy_init:
             self._lazy_initialize()
+
+    def __getstate__(self):
+        """Drop backend handles so DataLoader spawn workers can pickle the WSI."""
+        state = self.__dict__.copy()
+        state.pop('img', None)
+        # Workers reopen via _lazy_initialize on first use.
+        state['_initialized'] = False
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self._initialized = False
 
     def __repr__(self) -> str:
         if self._initialized:
@@ -388,7 +442,10 @@ class WSI:
 
         def _process_batches(ctx):
             dl_kwargs = dict(dataloader_kwargs)
-            if ctx is not None:
+            if ctx is None:
+                # Force in-process decode — never let PyTorch default to fork.
+                dl_kwargs['num_workers'] = 0
+            else:
                 dl_kwargs['multiprocessing_context'] = ctx
             dataloader = DataLoader(**dl_kwargs)
             iterator = tqdm(dataloader) if verbose else dataloader
@@ -436,8 +493,8 @@ class WSI:
         predicted_mask = _run_with_dataloader_ctx_fallback(
             _process_batches,
             inferred_workers,
-            'segmentation_spawn_fallback',
-            "[WSI] Falling back to a fork-based DataLoader context for segmentation due to pickling limits.",
+            'segmentation_ctx_fallback',
+            "[WSI] Falling back to the next DataLoader start method for segmentation due to pickling limits.",
             'segmentation dataloader',
         )
         return predicted_mask, mpp_reduction_factor
@@ -1004,7 +1061,9 @@ class WSI:
 
         def _collect_features(ctx):
             dl_kwargs = dict(dataloader_kwargs)
-            if ctx is not None:
+            if ctx is None:
+                dl_kwargs['num_workers'] = 0
+            else:
                 dl_kwargs['multiprocessing_context'] = ctx
             dataloader = DataLoader(**dl_kwargs)
             iterator = tqdm(dataloader) if verbose else dataloader
@@ -1028,8 +1087,8 @@ class WSI:
         features_batches = _run_with_dataloader_ctx_fallback(
             _collect_features,
             inferred_workers,
-            'feature_spawn_fallback',
-            "[WSI] Falling back to fork-based DataLoader workers for feature extraction due to pickling limits.",
+            'feature_ctx_fallback',
+            "[WSI] Falling back to the next DataLoader start method for feature extraction due to pickling limits.",
             'feature extraction dataloader',
         )
 

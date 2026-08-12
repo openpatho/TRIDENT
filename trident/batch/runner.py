@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
 
 from trident.batch.cache import (
     _resolve_device,
@@ -23,6 +25,47 @@ from trident.batch.types import (
 logger = logging.getLogger(__name__)
 
 SEGMENT_TARGET_MAG = 1.25
+
+
+def _slide_step_timeout_seconds() -> float:
+    """Per-slide hard timeout (0 = disabled). Default 1200s for hard WSIs."""
+    raw = os.environ.get("SLIDE_STEP_TIMEOUT_SECONDS", "").strip()
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            pass
+    return 1200.0
+
+
+def _run_with_slide_timeout(fn, *, timeout_s: float, label: str):
+    """Run ``fn`` in a daemon thread; raise TimeoutError if it exceeds ``timeout_s``.
+
+    The worker thread cannot be killed in-process (CUDA). Callers that hit a
+    timeout should recycle the container after marking the slide failed.
+    """
+    if timeout_s <= 0:
+        return fn()
+
+    box: dict = {}
+
+    def _target() -> None:
+        try:
+            box["value"] = fn()
+        except Exception as exc:  # noqa: BLE001 — re-raised on join path
+            box["error"] = exc
+
+    thread = threading.Thread(target=_target, daemon=True, name=f"slide-step:{label[:40]}")
+    thread.start()
+    thread.join(timeout_s)
+    if thread.is_alive():
+        raise TimeoutError(
+            f"slide_step_timeout after {timeout_s:.0f}s ({label}). "
+            "Worker thread leaked; container should recycle."
+        )
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
 
 
 def _slide_stem(slide_name: str) -> str:
@@ -267,6 +310,7 @@ def run_slide_batch(
             except (TypeError, ValueError):
                 parent_idxs.append(int(local_i))
         use_parent_idx = len(parent_idxs) == len(set(parent_idxs))
+        step_timeout_s = _slide_step_timeout_seconds()
 
         for local_i, entry in enumerate(entries):
             emit_idx = parent_idxs[local_i] if use_parent_idx else int(local_i)
@@ -280,16 +324,24 @@ def run_slide_batch(
                         if _cb is not None:
                             _cb(done, tot)
 
-                    _run_segment(
-                        entry,
-                        config,
-                        device,
-                        segmenter,
-                        on_segment_tile_progress=_tile_cb if tile_cb else None,
-                        artifact_model=artifact_model,
+                    _run_with_slide_timeout(
+                        lambda: _run_segment(
+                            entry,
+                            config,
+                            device,
+                            segmenter,
+                            on_segment_tile_progress=_tile_cb if tile_cb else None,
+                            artifact_model=artifact_model,
+                        ),
+                        timeout_s=step_timeout_s,
+                        label=f"segment:{entry.slide_name}",
                     )
                 elif step == "patch":
-                    _run_patch(entry, config)
+                    _run_with_slide_timeout(
+                        lambda: _run_patch(entry, config),
+                        timeout_s=step_timeout_s,
+                        label=f"patch:{entry.slide_name}",
+                    )
                 elif step == "extract":
                     extract_cb = None
                     if on_extract_progress:
@@ -297,15 +349,35 @@ def run_slide_batch(
                         def extract_cb(done: int, patch_total: int, _idx: int = emit_idx) -> None:
                             on_extract_progress(_idx, done, patch_total, total)
 
-                    _run_extract(
-                        entry,
-                        config,
-                        device,
-                        encoder,
-                        progress_callback=extract_cb,
+                    _run_with_slide_timeout(
+                        lambda: _run_extract(
+                            entry,
+                            config,
+                            device,
+                            encoder,
+                            progress_callback=extract_cb,
+                        ),
+                        timeout_s=step_timeout_s,
+                        label=f"extract:{entry.slide_name}",
                     )
                 else:
                     raise ValueError(f"Unsupported stage: {step}")
+            except TimeoutError as exc:
+                failed_errors[emit_idx] = str(exc)
+                logger.error("Batch timed out for %s at stage %s: %s", entry.slide_name, step, exc)
+                if on_item_done:
+                    on_item_done(
+                        {
+                            "idx": emit_idx,
+                            "slide_name": entry.slide_name,
+                            "stem": _slide_stem(entry.slide_name),
+                            "ok": False,
+                            "error": (str(exc) or "")[:500],
+                            "phase": step,
+                        }
+                    )
+                # Leaked CUDA thread — stop further slides on this GPU.
+                break
             except Exception as exc:
                 failed_errors[emit_idx] = str(exc)
                 logger.exception("Batch failed for %s at stage %s", entry.slide_name, step)

@@ -19,6 +19,9 @@ _ENV_SEG = {
 _ENV_PATCH = {
     "hoptimus0": ("TRIDENT_HOPTIMUS0_CKPT", "TRIDENT_ENCODER_CKPT"),
     "hoptimus1": ("TRIDENT_HOPTIMUS1_CKPT", "TRIDENT_ENCODER_CKPT"),
+    # Prefer encoder-specific env; do not fall back to TRIDENT_ENCODER_CKPT here —
+    # that key is often the boot default (hoptimus0) and poisons HF-hub-only encoders.
+    "h0-mini": ("TRIDENT_H0_MINI_CKPT",),
 }
 
 
@@ -34,6 +37,14 @@ def hf_weights_download_allowed() -> bool:
 def _first_existing_file(*candidates: str | None) -> str:
     for path in candidates:
         if path and os.path.isfile(path):
+            return path
+    return ""
+
+
+def _first_existing_path(*candidates: str | None) -> str:
+    """File or directory (HF snapshot dirs for encoders like h0-mini)."""
+    for path in candidates:
+        if path and (os.path.isfile(path) or os.path.isdir(path)):
             return path
     return ""
 
@@ -101,6 +112,21 @@ def resolve_patch_encoder_weights_path(
         raise FileNotFoundError(f"Patch encoder checkpoint not found: {explicit_path}")
 
     enc = str(encoder_name or "").strip().lower()
+    # h0-mini: only encoder-specific env (dir or file). Never inherit TRIDENT_ENCODER_CKPT
+    # from the boot-default encoder — that triggers a false "leave weights_path unset".
+    if enc == "h0-mini":
+        for env_key in _ENV_PATCH.get(enc, ()):
+            found = _first_existing_path(os.environ.get(env_key, "").strip() or None)
+            if found:
+                return found
+        registry_path = get_weights_path("patch", enc)
+        if registry_path and (os.path.isfile(registry_path) or os.path.isdir(registry_path)):
+            return registry_path
+        if hf_weights_download_allowed():
+            return ""
+        # Empty → caller loads from Hugging Face Hub when allowed by network/token.
+        return ""
+
     for env_key in _ENV_PATCH.get(enc, ()) + ("TRIDENT_ENCODER_CKPT",):
         found = _first_existing_file(os.environ.get(env_key, "").strip() or None)
         if found:

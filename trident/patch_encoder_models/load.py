@@ -1405,16 +1405,26 @@ class H0MiniInferenceEncoder(BasePatchEncoder):
         self.return_type = return_type
         img_size = _resolve_target_img_size(self.enc_name, target_img_size, 224, 14)
 
+        # Platform S3 sync drops a HF-style snapshot (config.json + weights). Prefer that
+        # local directory so Batch workers stay offline-friendly; fall back to Hub.
+        model_source = "hf-hub:bioptimus/H0-mini"
         if weights_path:
-            raise NotImplementedError(
-                "H0-mini currently supports loading from Hugging Face only. "
-                "Please leave `weights_path` unset."
-            )
+            model_dir = weights_path if os.path.isdir(weights_path) else os.path.dirname(weights_path)
+            if model_dir and os.path.isfile(os.path.join(model_dir, "config.json")):
+                model_source = model_dir
+            else:
+                raise NotImplementedError(
+                    "H0-mini local checkpoint must be an HF snapshot directory "
+                    f"(config.json + weights); got '{weights_path}'. "
+                    "Leave weights_path unset to download from Hugging Face, or sync "
+                    "platform/ml/weights/h0-mini from shared public S3."
+                )
+        else:
+            self.ensure_has_internet(self.enc_name)
 
-        self.ensure_has_internet(self.enc_name)
         try:
             model = timm.create_model(
-                "hf-hub:bioptimus/H0-mini",
+                model_source,
                 pretrained=True,
                 mlp_layer=timm.layers.SwiGLUPacked,
                 act_layer=torch.nn.SiLU,
@@ -1424,8 +1434,9 @@ class H0MiniInferenceEncoder(BasePatchEncoder):
         except Exception:
             traceback.print_exc()
             raise Exception(
-                "Failed to download H0-mini model, make sure that you were granted access "
-                "and that you correctly registered your token"
+                "Failed to load H0-mini model from "
+                f"'{model_source}'. For Hub downloads, confirm access + HF token; "
+                "for local S3 sync, confirm config.json and model weights exist."
             )
 
         # timm>=0.9 expects the model instance directly here.

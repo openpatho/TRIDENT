@@ -257,14 +257,19 @@ def run_slide_batch(
 
     for step in stages:
         step_done = 0
+        # Prefer parent/wave idxs when unique (multi-GPU shards). If callers left
+        # the default idx=0 on every entry, fall back to local enumerate.
+        parent_idxs: list[int] = []
         for local_i, entry in enumerate(entries):
-            # Preserve parent/wave idx so multi-GPU shards (1 slide each) do not
-            # all emit ITEM_DONE idx=0 and corrupt feature-set slide_status rows.
             raw_idx = getattr(entry, "idx", None)
             try:
-                emit_idx = int(raw_idx) if raw_idx is not None else int(local_i)
+                parent_idxs.append(int(raw_idx) if raw_idx is not None else int(local_i))
             except (TypeError, ValueError):
-                emit_idx = int(local_i)
+                parent_idxs.append(int(local_i))
+        use_parent_idx = len(parent_idxs) == len(set(parent_idxs))
+
+        for local_i, entry in enumerate(entries):
+            emit_idx = parent_idxs[local_i] if use_parent_idx else int(local_i)
             if emit_idx in failed_errors:
                 continue
             try:
@@ -332,12 +337,16 @@ def run_slide_batch(
                     }
                 )
 
+    parent_idxs = []
     for local_i, entry in enumerate(entries):
         raw_idx = getattr(entry, "idx", None)
         try:
-            emit_idx = int(raw_idx) if raw_idx is not None else int(local_i)
+            parent_idxs.append(int(raw_idx) if raw_idx is not None else int(local_i))
         except (TypeError, ValueError):
-            emit_idx = int(local_i)
+            parent_idxs.append(int(local_i))
+    use_parent_idx = len(parent_idxs) == len(set(parent_idxs))
+    for local_i, entry in enumerate(entries):
+        emit_idx = parent_idxs[local_i] if use_parent_idx else int(local_i)
         if emit_idx in failed_errors:
             results.append(
                 {

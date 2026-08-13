@@ -214,7 +214,11 @@ class WSI:
         if name is None:
             self.name, self.ext = splitext(os.path.basename(slide_path)) 
         else:
-            self.name, self.ext = splitext(name)
+            # ``name`` is already a stem from the caller (batch runner / hydrate).
+            # Do not ``splitext(name)`` again — stems like ``2025-01-01 12.10.32``
+            # would truncate to ``2025-01-01 12.10`` and miss hydrated coords.
+            self.name = str(name)
+            self.ext = splitext(os.path.basename(slide_path))[1]
         self.tissue_seg_path = tissue_seg_path
         self.custom_mpp_keys = custom_mpp_keys
 

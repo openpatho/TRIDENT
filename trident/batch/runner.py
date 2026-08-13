@@ -202,6 +202,38 @@ def _run_patch(entry: SlideEntry, config: PipelineConfig) -> str:
             slide.release()
 
 
+def _resolve_coords_path(save_coords: str, slide_stem: str) -> str:
+    """Locate ``*_patches.h5`` for extract after hydrate / stem mismatch.
+
+    Prefer ``<stem>_patches.h5``, then any coords file whose name contains the
+    stem, then the sole ``*_patches.h5`` in the patches dir.
+    """
+    patches_dir = os.path.join(save_coords, "patches")
+    expected = os.path.join(patches_dir, f"{slide_stem}_patches.h5")
+    if os.path.isfile(expected):
+        return expected
+    if not os.path.isdir(patches_dir):
+        return expected
+    try:
+        names = sorted(
+            name
+            for name in os.listdir(patches_dir)
+            if name.endswith("_patches.h5")
+            and os.path.isfile(os.path.join(patches_dir, name))
+        )
+    except OSError:
+        return expected
+    if not names:
+        return expected
+    stem_lower = str(slide_stem or "").lower()
+    for name in names:
+        if stem_lower and stem_lower in name.lower():
+            return os.path.join(patches_dir, name)
+    if len(names) == 1:
+        return os.path.join(patches_dir, names[0])
+    return expected
+
+
 def _run_extract(
     entry: SlideEntry,
     config: PipelineConfig,
@@ -214,11 +246,13 @@ def _run_extract(
     save_coords = _coords_dir(job_dir, config.target_mag, config.patch_size, config.overlap)
     slide = _load_slide(entry, config, job_dir)
     try:
-        coords_path = os.path.join(save_coords, "patches", f"{slide.name}_patches.h5")
+        stem = _slide_stem(entry.slide_name)
+        coords_path = _resolve_coords_path(save_coords, slide.name or stem)
+        if not os.path.isfile(coords_path):
+            coords_path = _resolve_coords_path(save_coords, stem)
         if not os.path.isfile(coords_path):
             raise FileNotFoundError(f"Coords not found for extract: {coords_path}")
         features_dir = os.path.join(save_coords, f"features_{config.patch_encoder}")
-        stem = _slide_stem(entry.slide_name)
         direct_h5 = config.features_h5_by_slide.get(entry.slide_name) or config.features_h5_by_slide.get(stem)
         return slide.extract_patch_features(
             patch_encoder=encoder,
